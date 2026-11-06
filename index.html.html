@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Somon yo'li - Qo'l boshqaruvi</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; background: #02030a; overflow: hidden; }
+    canvas#c { display: block; width: 100%; height: 100%; }
+    #cam {
+      position: fixed; right: 16px; bottom: 16px; width: 200px; height: 150px;
+      border-radius: 10px; border: 1px solid #1f2a44; object-fit: cover;
+      transform: scaleX(-1); opacity: .85;
+    }
+    #status {
+      position: fixed; left: 16px; top: 16px; color: #9fb0d0;
+      font: 14px/1.6 system-ui, sans-serif; max-width: 340px;
+    }
+    #start {
+      position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      padding: 14px 28px; font: 16px system-ui, sans-serif; color: #fff;
+      background: #2563eb; border: 0; border-radius: 10px; cursor: pointer;
+    }
+    #sliderWrap {
+      position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+      color: #7f8aa3; font: 13px system-ui, sans-serif; text-align: center;
+    }
+    #sliderWrap input { width: 260px; display: block; margin: 6px auto 0; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <video id="cam" autoplay playsinline muted></video>
+  <div id="status">Kamerani yoqish uchun tugmani bosing (yoki pastdagi slayderdan foydalaning)</div>
+  <button id="start">Kamerani yoqish</button>
+  <div id="sliderWrap">
+    Galaktika &nbsp;&larr;&nbsp; slayder &nbsp;&rarr;&nbsp; Quyosh tizimi
+    <input id="slider" type="range" min="0" max="100" value="0">
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js"></script>
+
+  <script>
+    const canvas = document.getElementById("c");
+    const ctx = canvas.getContext("2d");
+    const video = document.getElementById("cam");
+    const statusEl = document.getElementById("status");
+    const startBtn = document.getElementById("start");
+    const slider = document.getElementById("slider");
+
+    const TAU = Math.PI * 2;
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+    const lerp = (a, b, t) => a + (b - a) * t;
+    const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+    const gauss = () => (Math.random() + Math.random() + Math.random() + Math.random() - 2) / 2;
+
+    let W, H, minDim;
+    const bgCanvas = document.createElement("canvas");
+    function buildBg() {
+      bgCanvas.width = Math.max(1, Math.floor(W / 2));
+      bgCanvas.height = Math.max(1, Math.floor(H / 2));
+      const g = bgCanvas.getContext("2d");
+      const w = bgCanvas.width, h = bgCanvas.height;
+      const grad = g.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, Math.max(w, h) * 0.75);
+      grad.addColorStop(0, "#0a0f24"); grad.addColorStop(1, "#02030a");
+      g.fillStyle = grad; g.fillRect(0, 0, w, h);
+    }
+    function resize() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+      W = window.innerWidth; H = window.innerHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      minDim = Math.min(W, H);
+      buildBg();
+    }
+    window.addEventListener("resize", resize);
+    resize();
+
+    // =====================================================
+    //  FON YULDUZLARI
+    // =====================================================
+    const bgStars = Array.from({ length: 220 }, () => ({
+      x: Math.random(), y: Math.random(),
+      s: Math.random() * 1.2 + 0.3, p: Math.random() * TAU
+    }));
+
+    // =====================================================
+    //  GALAKTIKA (Somon yo'li): 4 ta spiral shox + markaziy bo'rtiq
+    // =====================================================
+    const ARMS = 4, TWIST = 5.2, STAR_COUNT = 6000, BULGE = 1600;
+    const palette = [
+      "hsla(42,85%,82%,0.75)", "hsla(34,90%,70%,0.70)", "hsla(48,60%,88%,0.65)",   // 0-2 issiq (markaz)
+      "hsla(215,85%,88%,0.85)", "hsla(225,90%,76%,0.75)", "hsla(200,70%,92%,0.90)", // 3-5 ko'k (shoxlar)
+      "hsla(330,80%,80%,0.70)", "hsla(190,80%,80%,0.60)"                           // 6-7 pushti / havorang
+    ];
+    const buckets = palette.map(() => []);
+
+    for (let i = 0; i < STAR_COUNT; i++) {
+      let r, a, z, c;
+      if (i < BULGE) {
+        r = Math.abs(gauss()) * 0.17 + Math.random() * 0.02;
+        a = Math.random() * TAU;
+        z = gauss() * 0.06;
+        c = Math.floor(Math.random() * 3);
+      } else {
+        r = 0.08 + Math.pow(Math.random(), 0.8) * 0.92;
+        const arm = Math.floor(Math.random() * ARMS);
+        a = arm * TAU / ARMS + r * TWIST + gauss() * (0.55 * (1.15 - r));
+        z = gauss() * 0.035 * (1.2 - r);
+        const q = Math.random();
+        c = q < 0.60 ? 3 + Math.floor(Math.random() * 3) : q < 0.75 ? 6 : q < 0.88 ? 7 : Math.floor(Math.random() * 3);
+      }
+      buckets[c].push({
+        r, a, z,
+        w: 0.00022 / (r + 0.2),                       // burchak tezligi
+        s: Math.random() < 0.06 ? 2.2 : 1.1
+      });
+    }
+
+    // Quyosh tizimining galaktikadagi joyi (shoxlardan birida)
+    const SUN_R = 0.58;
+    const SUN_A0 = TAU / ARMS + SUN_R * TWIST;
+    const SUN_W = 0.00022 / (SUN_R + 0.2);
+
+    // =====================================================
+    //  QUYOSH TIZIMI
+    // =====================================================
+    const planets = [
+      { n: "Merkuriy", size: 4,    c: ["#c9c9c9", "#575757"], period: 0.24  },
+      { n: "Venera",   size: 6.5,  c: ["#f6dfa6", "#a8793a"], period: 0.62  },
+      { n: "Yer (uyimiz)", size: 7, c: ["#7cc2ff", "#1b4f9c"], period: 1.0   },
+      { n: "Mars",     size: 5.5,  c: ["#ff9a70", "#8a2f14"], period: 1.88  },
+      { n: "Yupiter",  size: 15,   c: ["#f5d9b4", "#9c6a3b"], period: 11.86 },
+      { n: "Saturn",   size: 12.5, c: ["#f9e8b0", "#a58a4a"], period: 29.46, ring: true },
+      { n: "Uran",     size: 9.5,  c: ["#b4f4f4", "#3a9aa6"], period: 84    },
+      { n: "Neptun",   size: 9,    c: ["#86aaff", "#1f3a9c"], period: 165   }
+    ];
+    planets.forEach((p, i) => { p.phase = Math.random() * TAU; p.i = i; });
+
+    // =====================================================
+    //  HOLAT
+    // =====================================================
+    const S = {
+      mode: 0, tMode: 0,        // 0 = galaktika, 1 = Quyosh tizimi
+      spin: 0, tSpin: 0, vel: 0,          // qo'lni aylantirish
+      tilt: 1.05, tTilt: 1.05,  // galaktika qiyaligi
+      zoom: 1, tZoom: 1         // qo'l kameraga yaqinligi
+    };
+    let handVisible = false, lastAngle = null, sliderMode = 0;
+    let lastSeen = -99999, lastSliderVal = -1, lastStatusAt = 0;
+
+    slider.addEventListener("input", () => { sliderMode = slider.value / 100; });
+
+    // =====================================================
+    //  QO'L KUZATUVI
+    // =====================================================
+    const dist2 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+    // One Euro filtri: kichik titroqni yo'qotadi, tez harakatni esa kechiktirmaydi
+    class OneEuro {
+      constructor(minCut, beta) { this.minCut = minCut; this.beta = beta; this.dCut = 1.0; this.t = null; this.x = 0; this.dx = 0; }
+      a(cut, dt) { const tau = 1 / (2 * Math.PI * cut); return 1 / (1 + tau / dt); }
+      filter(x, tms) {
+        const t = tms / 1000;
+        if (this.t === null) { this.t = t; this.x = x; this.dx = 0; return x; }
+        const dt = Math.max(1e-3, t - this.t); this.t = t;
+        this.dx += this.a(this.dCut, dt) * ((x - this.x) / dt - this.dx);
+        this.x += this.a(this.minCut + this.beta * Math.abs(this.dx), dt) * (x - this.x);
+        return this.x;
+      }
+      reset() { this.t = null; }
+    }
+    const fMode = new OneEuro(1.0, 0.4);
+    const fZoom = new OneEuro(0.6, 0.2);
+    const fTilt = new OneEuro(0.6, 0.2);
+    const fAng  = new OneEuro(1.2, 0.05);
+    let angUnwrapped = 0, prevAngRaw = null, prevAngF = null, filtersFresh = true;
+
+    function resetFilters() {
+      [fMode, fZoom, fTilt, fAng].forEach(f => f.reset());
+      prevAngRaw = null; prevAngF = null; lastAngle = null;
+    }
+
+    function onResults(results) {
+      if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+        handVisible = false;
+        statusEl.textContent = "Qo'l ko'rinmayapti. Qo'lingizni kameraga ko'rsating.";
+        return;
+      }
+      handVisible = true;
+      const now = performance.now();
+      lastSeen = now; filtersFresh = false;
+
+      const lm = results.multiHandLandmarks[0];
+      const wrist = lm[0], midMcp = lm[9];
+      const palmSize = dist2(wrist, midMcp) || 0.0001;
+
+      // Barmoqlar orasidagi masofa: birlashgan ~0.25, ochiq ~0.6+
+      const gap = (dist2(lm[8], lm[12]) + dist2(lm[12], lm[16]) + dist2(lm[16], lm[20])) / 3 / palmSize;
+      const t = clamp((gap - 0.30) / 0.32, 0, 1);
+      S.tMode = clamp(fMode.filter(t, now), 0, 1);
+
+      // Qo'lni kameraga yaqinlashtirish -> kattalashtirish
+      const z = clamp((palmSize - 0.08) / 0.17, 0, 1);
+      S.tZoom = 0.8 + clamp(fZoom.filter(z, now), 0, 1) * 0.6;
+
+      // Qo'l balandligi -> galaktika qiyaligi
+      let py = 0;
+      [0, 5, 9, 13, 17].forEach(i => { py += lm[i].y; });
+      py /= 5;
+      S.tTilt = clamp(0.55 + fTilt.filter(py, now) * 1.0, 0.5, 1.35);
+
+      // Qo'lni aylantirish: filtrlangan burchak o'zgarishi -> maqsad burchagi
+      const raw = Math.atan2(midMcp.y - wrist.y, -(midMcp.x - wrist.x));
+      if (prevAngRaw === null) {
+        angUnwrapped = raw;
+      } else {
+        let d = raw - prevAngRaw;
+        if (d > Math.PI) d -= TAU;
+        if (d < -Math.PI) d += TAU;
+        angUnwrapped += d;
+      }
+      prevAngRaw = raw;
+      const af = fAng.filter(angUnwrapped, now);
+      if (prevAngF !== null) {
+        const d = af - prevAngF;
+        if (Math.abs(d) > 0.003) S.tSpin += d * 1.6;   // mayda titroq e'tiborga olinmaydi
+      }
+      prevAngF = af;
+
+      if (now - lastStatusAt > 200) {
+        lastStatusAt = now;
+        statusEl.textContent = "Qo'l topildi ✓  Barmoqlar ochilishi: " + Math.round(S.tMode * 100) + "%";
+      }
+    }
+
+    let hands = null;
+    async function startCamera() {
+      startBtn.disabled = true;
+      statusEl.textContent = "Model yuklanmoqda...";
+      try {
+        hands = new Hands({
+          locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${f}`
+        });
+        hands.setOptions({
+          maxNumHands: 1, modelComplexity: 0,
+          minDetectionConfidence: 0.6, minTrackingConfidence: 0.6
+        });
+        hands.onResults(onResults);
+        await hands.initialize();   // modelni oldindan yuklash (birinchi kadrdagi qotishni oladi)
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 320, height: 240, frameRate: { ideal: 30 }, facingMode: "user" }
+        });
+        video.srcObject = stream;
+        await video.play();
+        startBtn.style.display = "none";
+        statusEl.textContent = "Qo'lingizni kameraga ko'rsating.";
+
+        let busy = false, lastSend = 0;
+        const loop = async (now) => {
+          if (!busy && video.readyState >= 2 && now - lastSend > 33) {
+            busy = true; lastSend = now;
+            try { await hands.send({ image: video }); } catch (e) { console.error(e); }
+            busy = false;
+          }
+          requestAnimationFrame(loop);
+        };
+        requestAnimationFrame(loop);
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = "Kameraga ruxsat berilmadi yoki xatolik: " + err.message;
+        startBtn.disabled = false;
+      }
+    }
+    startBtn.addEventListener("click", startCamera);
+
+    // =====================================================
+    //  CHIZISH
+    // =====================================================
+    let avgDt = 16, stride = 1, lastT = 0, galT = 0;
+    function frame(time) {
+      if (lastT) {
+        avgDt += (Math.min(time - lastT, 100) - avgDt) * 0.05;
+        stride = avgDt > 36 ? 3 : avgDt > 26 ? 2 : (avgDt < 20 ? 1 : stride);
+      }
+      // yaqinlashganda galaktikaning aylanishi sekinlashadi (yulduzlar qochib ketmasligi uchun)
+      if (lastT) galT += Math.min(time - lastT, 100) * (1 - 0.95 * smooth(0.15, 0.7, S.mode));
+      lastT = time;
+      // fon
+      ctx.globalCompositeOperation = "source-over";
+      ctx.globalAlpha = 1;
+      ctx.drawImage(bgCanvas, 0, 0, W, H);
+      ctx.fillStyle = "#fff";
+      for (const b of bgStars) {
+        ctx.globalAlpha = 0.25 + 0.35 * (0.5 + 0.5 * Math.sin(time * 0.001 + b.p));
+        ctx.fillRect(b.x * W, b.y * H, b.s, b.s);
+      }
+      ctx.globalAlpha = 1;
+
+      // holatni yangilash
+      // qo'l 0.5 soniyagacha ko'rinmay qolsa ham oxirgi holat saqlanadi (sakrash bo'lmaydi)
+      const active = performance.now() - lastSeen < 500;
+      if (active) {
+        sliderMode = S.tMode;
+        const v = Math.round(S.mode * 100);
+        if (v !== lastSliderVal) { slider.value = v; lastSliderVal = v; }
+      } else {
+        S.tMode = sliderMode; S.tTilt = 1.05; S.tZoom = 1;
+        if (!filtersFresh) { resetFilters(); filtersFresh = true; }
+      }
+      S.mode += (S.tMode - S.mode) * 0.07;
+      S.tilt += (S.tTilt - S.tilt) * 0.1;
+      S.zoom += (S.tZoom - S.zoom) * 0.1;
+      S.spin += (S.tSpin - S.spin) * 0.15;
+
+      const mode = S.mode;
+      const view = computeView(time, W / 2, H / 2);
+      drawGalaxy(time, view, mode);
+      drawSolar(time, view, mode);
+
+      // sarlavha
+      ctx.globalCompositeOperation = "source-over";
+      ctx.globalAlpha = 0.8;
+      ctx.fillStyle = "#c9d6f5";
+      ctx.font = "600 18px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(mode > 0.85 ? "Quyosh tizimi" : "Somon yo'li galaktikasi", W / 2, 34);
+      ctx.textAlign = "start";
+      ctx.globalAlpha = 1;
+
+      requestAnimationFrame(frame);
+    }
+
+    // Yaqinlashish: galaktikadan bitta yulduzga (Quyoshga) eksponensial "uchish"
+    const ZMAX = 300, LN_ZMAX = Math.log(ZMAX);
+
+    // Quyosh atrofidagi yaqin yulduzlar (yaqinlashganda ko'rina boshlaydi)
+    const nearStars = Array.from({ length: 380 }, () => {
+      const rr = Math.sqrt(Math.random()) * 0.035, ang = Math.random() * TAU;
+      return {
+        x: rr * Math.cos(ang), y: rr * Math.sin(ang),
+        s: Math.random() < 0.15 ? 2.6 : 1.3,
+        c: Math.floor(Math.random() * palette.length)
+      };
+    });
+
+    function computeView(time, cx, cy) {
+      const cs = Math.cos(S.tilt);
+      const Rg = minDim * 0.42 * S.zoom;
+      const sa = SUN_A0 + S.spin + galT * SUN_W;
+      const sunX = SUN_R * Math.cos(sa);
+      const sunY = SUN_R * Math.sin(sa) * cs;
+      const Z = Math.exp(LN_ZMAX * S.mode);          // 1 ... 300 marta
+      const pan = smooth(0, 0.7, S.mode);            // Quyosh asta-sekin ekran markaziga keladi
+      return {
+        cs, Rg, sunX, sunY, Z, cx, cy,
+        scale: Rg * Z,
+        ax: lerp(cx + sunX * Rg, cx, pan),           // Quyoshning ekrandagi joyi
+        ay: lerp(cy + sunY * Rg, cy, pan),
+        solarK: (Z / ZMAX) * clamp(S.zoom, 0.75, 1.3) // Quyosh tizimi o'lchami: 1/300 ... 1
+      };
+    }
+
+    function drawGalaxy(time, v, mode) {
+      const sn = Math.sin(S.tilt);
+      const ga = 1 - smooth(0.72, 0.95, mode);
+
+      ctx.globalCompositeOperation = "lighter";
+
+      if (ga > 0.01) {
+        // markaz nuri
+        const glowA = (1 - smooth(0.3, 0.65, mode)) * ga;
+        if (glowA > 0.01) {
+          const gx = v.ax - v.sunX * v.scale, gy = v.ay - v.sunY * v.scale;
+          const glow = ctx.createRadialGradient(gx, gy, 0, gx, gy, v.scale * 0.38);
+          glow.addColorStop(0, "rgba(255,226,160,0.55)");
+          glow.addColorStop(0.4, "rgba(255,190,120,0.18)");
+          glow.addColorStop(1, "rgba(255,160,100,0)");
+          ctx.globalAlpha = glowA;
+          ctx.fillStyle = glow;
+          ctx.fillRect(0, 0, W, H);
+        }
+
+        // galaktika yulduzlari
+        ctx.globalAlpha = ga;
+        const grow = (1 + Math.log(v.Z) * 0.3) * (1 + (stride - 1) * 0.35);
+        for (let b = 0; b < buckets.length; b++) {
+          ctx.fillStyle = palette[b];
+          const list = buckets[b];
+          for (let k = 0; k < list.length; k += stride) {
+            const st = list[k];
+            const a = st.a + S.spin + galT * st.w;
+            const x = st.r * Math.cos(a);
+            const y = st.r * Math.sin(a) * v.cs - st.z * sn;
+            const sx = v.ax + (x - v.sunX) * v.scale;
+            const sy = v.ay + (y - v.sunY) * v.scale;
+            if (sx < -4 || sx > W + 4 || sy < -4 || sy > H + 4) continue;
+            const sz = st.s * grow;
+            ctx.fillRect(sx, sy, sz, sz);
+          }
+        }
+      }
+
+      // Quyosh atrofidagi yaqin yulduzlar
+      const na = smooth(0.1, 0.4, mode) * (1 - 0.5 * smooth(0.85, 1, mode));
+      if (na > 0.01) {
+        ctx.globalAlpha = na;
+        const ns = 1 + Math.log(v.Z) * 0.18;
+        for (const st of nearStars) {
+          const sx = v.ax + st.x * v.scale, sy = v.ay + st.y * v.cs * v.scale;
+          if (sx < -4 || sx > W + 4 || sy < -4 || sy > H + 4) continue;
+          ctx.fillStyle = palette[st.c];
+          const sz = st.s * ns;
+          ctx.fillRect(sx, sy, sz, sz);
+        }
+      }
+
+      // "Siz shu yerdasiz" belgisi
+      const markAlpha = 1 - smooth(0.12, 0.35, mode);
+      if (markAlpha > 0.01) {
+        ctx.globalCompositeOperation = "source-over";
+        ctx.globalAlpha = markAlpha;
+        const pr = 7 + 2 * Math.sin(time * 0.004);
+        ctx.strokeStyle = "#ffd36b"; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(v.ax, v.ay, pr, 0, TAU); ctx.stroke();
+        ctx.fillStyle = "#ffd36b";
+        ctx.font = "13px system-ui, sans-serif";
+        ctx.fillText("Quyosh tizimi: siz shu yerdasiz", v.ax + 14, v.ay + 4);
+      }
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = "source-over";
+    }
+
+    function drawSolar(time, v, mode) {
+      const K = v.solarK;
+      const k = clamp(Math.cos(S.tilt), 0.3, 1);
+      const ax = v.ax, ay = v.ay;
+      const sec = time / 1000;
+
+      const orbitA = smooth(0.06, 0.30, K);
+      const planetA = smooth(0.04, 0.22, K);
+      const labelA = smooth(0.55, 0.90, K);
+
+      // --- orbitalar va sayyora o'rinlari (Quyosh markazida) ---
+      const pos = planets.map(p => {
+        const orbit = minDim * (0.075 + p.i * 0.047) * K;
+        const ang = p.phase + sec * 0.5 / Math.pow(p.period, 0.8) + S.spin * 0.6;
+        return {
+          p, orbit,
+          x: ax + orbit * Math.cos(ang),
+          y: ay + orbit * k * Math.sin(ang),
+          back: Math.sin(ang) < 0
+        };
+      });
+
+      ctx.globalCompositeOperation = "source-over";
+      if (orbitA > 0.01) {
+        ctx.globalAlpha = orbitA;
+        ctx.strokeStyle = "rgba(255,255,255,0.12)"; ctx.lineWidth = 1;
+        for (const o of pos) {
+          ctx.beginPath(); ctx.ellipse(ax, ay, o.orbit, o.orbit * k, 0, 0, TAU); ctx.stroke();
+        }
+      }
+
+      const drawPlanet = (o) => {
+        const r = Math.max(0.9, o.p.size * K * 1.1 + K);
+        if (o.p.ring) {
+          ctx.strokeStyle = "rgba(230,205,150,0.8)"; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.ellipse(o.x, o.y, r * 1.9, r * 0.55, -0.25, Math.PI, TAU); ctx.stroke();
+        }
+        const g = ctx.createRadialGradient(o.x - r * 0.35, o.y - r * 0.35, r * 0.1, o.x, o.y, r);
+        g.addColorStop(0, o.p.c[0]); g.addColorStop(1, o.p.c[1]);
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(o.x, o.y, r, 0, TAU); ctx.fill();
+        if (o.p.ring) {
+          ctx.strokeStyle = "rgba(230,205,150,0.9)"; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.ellipse(o.x, o.y, r * 1.9, r * 0.55, -0.25, 0, Math.PI); ctx.stroke();
+        }
+        if (labelA > 0.01) {
+          ctx.globalAlpha = planetA * labelA;
+          ctx.fillStyle = "rgba(200,215,255,0.9)";
+          ctx.font = "12px system-ui, sans-serif";
+          ctx.fillText(o.p.n, o.x + r + 6, o.y + 4);
+          ctx.globalAlpha = planetA;
+        }
+      };
+
+      ctx.globalAlpha = planetA;
+      if (planetA > 0.01) pos.filter(o => o.back).forEach(drawPlanet);
+
+      // --- Quyosh: yulduz nuqtasidan to katta Quyoshgacha o'sadi ---
+      const sr = Math.max(1.6, 26 * K);
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = "lighter";
+      const haloR = Math.max(9, sr * 4);
+      const halo = ctx.createRadialGradient(ax, ay, 0, ax, ay, haloR);
+      halo.addColorStop(0, "rgba(255,236,170,0.95)");
+      halo.addColorStop(0.25, "rgba(255,175,50,0.38)");
+      halo.addColorStop(1, "rgba(255,140,0,0)");
+      ctx.fillStyle = halo;
+      ctx.beginPath(); ctx.arc(ax, ay, haloR, 0, TAU); ctx.fill();
+      ctx.globalCompositeOperation = "source-over";
+      const core = ctx.createRadialGradient(ax, ay, 0, ax, ay, sr);
+      core.addColorStop(0, "#fffbe0"); core.addColorStop(0.6, "#ffd23f"); core.addColorStop(1, "#ff9a00");
+      ctx.fillStyle = core;
+      ctx.beginPath(); ctx.arc(ax, ay, sr, 0, TAU); ctx.fill();
+      if (labelA > 0.01) {
+        ctx.globalAlpha = labelA;
+        ctx.fillStyle = "rgba(255,235,170,0.95)";
+        ctx.font = "12px system-ui, sans-serif";
+        ctx.fillText("Quyosh", ax + sr + 6, ay + 4);
+      }
+
+      ctx.globalAlpha = planetA;
+      if (planetA > 0.01) pos.filter(o => !o.back).forEach(drawPlanet);
+      ctx.globalAlpha = 1;
+    }
+
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>
